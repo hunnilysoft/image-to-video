@@ -1,12 +1,22 @@
-numpy==1.26.4 
-torch==2.1.0+cu121
-torchvision==0.16.0+cu121
+# Versões principais
+torch==2.1.1+cu121
+torchvision==0.16.1+cu121
 --extra-index-url https://download.pytorch.org/whl/cu121
+
+# Bibliotecas Hugging Face
 diffusers==0.24.0
 accelerate==0.25.0
 transformers==4.35.2
 huggingface-hub==0.19.4
+
+# Outras dependências
 fastapi==0.104.1
 uvicorn==0.24.0.post1
 pillow==10.1.0
+safetensors==0.4.1
 python-multipart==0.0.20
+numpy==1.26.4
+opencv_python==4.11.0.86
+
+# XFormers (versão compatível)
+# xformers==0.0.23.post1+cu121

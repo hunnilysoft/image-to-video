@@ -1,76 +1,99 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import FileResponse
 from diffusers import DiffusionPipeline
-from diffusers.utils import export_to_video  # Import missing function
+from diffusers.utils import export_to_video
 import torch
-from PIL import Image
-import io
 import os
-import gc  # For memory management
+import gc
+import logging
+from pathlib import Path
+import uuid
+from datetime import datetime
+import os
 
+# Configurações
 app = FastAPI()
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
-# Initialize model (but don't load it yet)
-pipe = None
+# Diretório de saída (usará a variável de ambiente)
+OUTPUT_VIDEOS_DIR = Path(os.getenv("OUTPUT_VIDEOS_DIR", "/app/output_videos"))
+OUTPUT_VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
 
-def load_model():
-    global pipe
-    if pipe is None:
-        pipe = DiffusionPipeline.from_pretrained(
-            "cerspense/zeroscope_v2_576w",
-            torch_dtype=torch.float16,
-        )
-        pipe.to("cuda")
-        pipe.enable_model_cpu_offload()
+# Pipeline do modelo
+zeroscope_pipe = None
+
+def load_zeroscope():
+    global zeroscope_pipe
+    if zeroscope_pipe is None:
+        try:
+            logger.info("Carregando modelo Zeroscope...")
+            zeroscope_pipe = DiffusionPipeline.from_pretrained(
+                "cerspense/zeroscope_v2_576w",
+                torch_dtype=torch.float16
+            )
+            zeroscope_pipe.to("cuda")
+            zeroscope_pipe.enable_model_cpu_offload()
+            logger.info("Modelo carregado com sucesso!")
+        except Exception as e:
+            logger.error(f"Erro ao carregar modelo: {str(e)}")
+            raise
 
 @app.on_event("startup")
 async def startup_event():
-    load_model()
+    load_zeroscope()
 
-@app.post("/generate-video")
-async def generate_video(
+def generate_unique_filename():
+    """Gera um nome de arquivo único com timestamp"""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    unique_id = uuid.uuid4().hex[:6]
+    return OUTPUT_VIDEOS_DIR / f"video_{timestamp}_{unique_id}.mp4"
+
+@app.post("/text-to-video")
+async def text_to_video(
     prompt: str = "A robot dancing on the moon",
-    image: UploadFile = File(None),
-    num_frames: int = 12,
+    num_frames: int = 24,
+    height: int = 320,
+    width: int = 576
 ):
+    output_path = generate_unique_filename()
+    
     try:
-        # Ensure model is loaded
-        load_model()
-        
-        # Process image if provided
-        img = None
-        if image:
-            img_data = await image.read()
-            img = Image.open(io.BytesIO(img_data)).convert("RGB")
-            if not prompt or prompt == "A video based on the uploaded image":
-                prompt = "High quality animation of the image with smooth motion"
-
-        # Generate video
-        generator = torch.Generator(device="cuda").manual_seed(42)  # For reproducibility
-        frames = pipe(
-            prompt,
-            image=img,  # Pass image directly if provided
-            num_frames=num_frames,
-            generator=generator
-        ).frames
-
-        # Save and return video
-        output_path = "generated_video.mp4"
-        export_to_video(frames, output_path, fps=8)
-        
-        # Clean up
-        del frames
+        # Limpeza de memória
         torch.cuda.empty_cache()
         gc.collect()
+
+        logger.info(f"Gerando vídeo: {output_path.name}")
+        
+        # Geração do vídeo
+        with torch.inference_mode():
+            frames = zeroscope_pipe(
+                prompt=prompt,
+                num_frames=num_frames,
+                height=height,
+                width=width,
+                generator=torch.Generator(device="cuda").manual_seed(42)
+            ).frames
+
+        # Salva o vídeo
+        export_to_video(frames, str(output_path), fps=8)
+        
+        if not output_path.exists():
+            raise HTTPException(status_code=500, detail="Falha ao gerar arquivo de vídeo")
         
         return FileResponse(
-            output_path,
+            str(output_path),
             media_type="video/mp4",
-            filename="generated_video.mp4"
+            filename=output_path.name
         )
-    
+        
+    except torch.cuda.OutOfMemoryError:
+        error_msg = "Memória GPU insuficiente. Reduza num_frames ou resolução."
+        logger.error(error_msg)
+        raise HTTPException(status_code=500, detail=error_msg)
     except Exception as e:
+        logger.error(f"Erro na geração: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        if os.path.exists("generated_video.mp4"):
-            os.remove("generated_video.mp4")  # Clean up temp file
+        torch.cuda.empty_cache()
+        gc.collect()
