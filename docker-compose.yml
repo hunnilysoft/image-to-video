@@ -1,0 +1,20 @@
+services:
+  zeroscope-api:
+    build: .
+    container_name: zeroscope-api
+    runtime: nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    ports:
+      - "8000:8000"
+    shm_size: '1gb'
+    volumes:
+      - ./cache:/root/.cache/huggingface
+    restart: unless-stopped
